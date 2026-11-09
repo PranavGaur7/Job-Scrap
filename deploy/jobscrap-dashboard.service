@@ -1,0 +1,28 @@
+[Unit]
+Description=JobScrap dashboard
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=jobscrap
+Group=jobscrap
+WorkingDirectory=/opt/jobscrap
+Environment=JOBSCRAP_ENV_FILE=/opt/jobscrap/.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/jobscrap/var/ms-playwright
+ExecStart=/opt/jobscrap/.venv/bin/jobscrap serve
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=2min
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/jobscrap/var
+
+[Install]
+WantedBy=multi-user.target

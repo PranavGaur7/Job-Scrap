@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Verified recent opportunities, matched against your resume.">
+  <title>JobScrap · Your opportunities</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='/dashboard.css') }}">
+</head>
+<body>
+  <aside class="sidebar">
+    <a class="brand" href="/" aria-label="JobScrap home"><span class="brand-mark">j.</span>JobScrap</a>
+    <div class="workspace-label">PERSONAL WORKSPACE</div>
+    <a class="nav-link current" href="/">↗ <span>Opportunities</span></a>
+    <a class="nav-link" href="#companies">◎ <span>Companies</span><span class="nav-count">{{ companies|length }}</span></a>
+    <a class="nav-link" href="#activity">≋ <span>Run history</span></a>
+    <div class="sidebar-note"><span class="status-dot"></span> Your next move, in one place.<p>Verified dates. Clear matches.<br>A quieter job search.</p></div>
+    <div class="profile"><span class="avatar">PG</span><div>Pranav Gaur<small>Personal dashboard</small></div></div>
+  </aside>
+  <main>
+    <header class="topbar"><span>Workspace <span class="slash">/</span> Opportunities</span><span class="small">{{ now.strftime('%d %b %Y') }} · UTC</span></header>
+    <div class="content">
+      <div class="page-heading"><div><div class="eyebrow">THE NEXT CHAPTER</div><h1>Your opportunities.</h1><p>Fresh roles. A little closer to your next great fit.</p></div><span class="window-tag"><span class="status-dot"></span> Last 72 hours only</span></div>
+      {% if warning %}<div class="notice warning" role="status">{{ warning }}</div>{% endif %}
+      {% if task_message %}<div class="notice" role="status">{{ task_message }}</div>{% endif %}
+      <section class="overview" aria-label="Workspace overview">
+        <div><span class="metric-label">COMPANY SOURCES</span><strong>{{ companies|length }}</strong><small>{{ enabled_count }} enabled · {{ companies|length - enabled_count }} pending or disabled</small></div>
+        <div><span class="metric-label">FRESHNESS WINDOW</span><strong>3 <span>days</span></strong><small>Verified posting dates, never discovery dates</small></div>
+        <div><span class="metric-label">MATCHING MODE</span><strong class="mode">{{ 'AI + skills' if mode == 'hybrid' else 'Skills match' }}</strong><small>{{ 'Cached LangChain scoring with a call budget' if mode == 'hybrid' else 'Deterministic · no paid API calls' }}</small></div>
+      </section>
+      <section class="opportunities" aria-labelledby="jobs-heading">
+        <div class="section-top"><div><h2 id="jobs-heading">All opportunities <span class="pill">{{ jobs|length }} on this page</span></h2><p>One view across your company career pages.</p></div><div class="actions">
+          <form method="post" action="/actions/rescore"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="secondary" {% if not db_ready %}disabled{% endif %}>↻ Rescore</button></form>
+          <form method="post" action="/actions/scrape"><input type="hidden" name="csrf" value="{{ csrf }}"><button {% if not db_ready or not enabled_count %}disabled{% endif %}>Run scrape <span aria-hidden="true">↗</span></button></form>
+        </div></div>
+        <form class="filters" method="get" action="/">
+          <label class="search">Search roles or companies<input type="search" name="q" value="{{ q }}" placeholder="Search roles or companies…" maxlength="150"></label>
+          <label>Company<select name="company"><option value="">All companies</option>{% for c in companies %}<option value="{{ c._id }}" {% if c._id == company %}selected{% endif %}>{{ c.name }}</option>{% endfor %}</select></label>
+          <label>Location<input name="location" value="{{ location }}" placeholder="Any location" maxlength="100"></label>
+          <label>Minimum score<input type="number" name="min_score" value="{{ min_score|int }}" min="0" max="100"></label>
+          <label>Sort<select name="sort"><option value="newest" {% if sort == 'newest' %}selected{% endif %}>Newest first</option><option value="score" {% if sort == 'score' %}selected{% endif %}>Scored jobs · best match</option></select></label>
+          <button class="secondary filter-button">Filter</button><a class="reset" href="/">Reset</a>
+        </form>
+        {% if jobs %}
+        <div class="table-scroll"><table><thead><tr><th scope="col">Company & role</th><th scope="col">Location</th><th scope="col">Posted · UTC</th><th scope="col">Resume match</th><th scope="col"><span class="sr-only">Application</span></th></tr></thead><tbody>
+          {% for job in jobs %}<tr><td><span class="company-name">{{ job.company_name }}</span><strong class="role">{{ job.title }}</strong><details><summary>Match & source details</summary><div class="job-detail"><p>{{ job.description[:1800] }}{% if job.description|length > 1800 %}…{% endif %}</p>{% if job.display_match %}<p>{{ job.display_match.reason }}</p><p><b>Matched:</b> {{ job.display_match.matched_skills|join(', ') or 'None recognized' }}</p><p><b>Gaps:</b> {{ job.display_match.missing_skills|join(', ') or 'None identified' }}</p>{% endif %}<p>Source field: {{ job.posting_evidence.field_name }} · {{ job.posting_evidence.kind }} · {{ job.posting_evidence.precision }}</p><a href="{{ job.posting_evidence.source_url }}" target="_blank" rel="noopener noreferrer">View date source ↗</a></div></details></td><td>{{ job.location or 'Not specified' }}</td><td class="date">{{ job.posted_at.strftime('%d %b %Y') }}<small>{{ job.posted_at.strftime('%H:%M') }}{% if job.posting_evidence.precision == 'date' %} · date only{% endif %}</small></td><td>{% if job.display_match %}<span class="score">{{ job.display_match.score|round(1) }}<small>/100</small></span><small class="method">{{ 'AI assessment' if job.display_match.method == 'ai' else 'Skills heuristic' }}{% if job.display_match.retryable %} · AI pending{% endif %}</small>{% else %}<span class="pending">Pending rescore</span>{% endif %}</td><td><a class="apply" href="{{ job.application_url }}" target="_blank" rel="noopener noreferrer">Apply ↗</a></td></tr>{% endfor %}
+        </tbody></table></div>
+        {% else %}
+        <div class="empty-state"><span class="empty-icon" aria-hidden="true">↗</span><h3>{{ 'Your next opportunity starts here.' if not enabled_count else 'No verified recent jobs in this view.' }}</h3><p>{% if not enabled_count %}Add your companies, then connect a verified scraper adapter.<br>Fresh jobs and resume matches will appear here after a successful run.{% else %}Try adjusting your filters, or run a scrape.<br>Jobs without verifiable posting dates are always excluded.{% endif %}</p><span class="empty-note">No sample listings. Only verified opportunities.</span></div>
+        {% endif %}
+        <div class="table-footer"><span>Scores measure relevance, not hiring probability.</span><nav aria-label="Result pages">{% if page > 1 %}<a href="{{ previous }}">← Previous</a>{% endif %}<span>Page {{ page }}</span>{% if has_next %}<a href="{{ next }}">Next →</a>{% endif %}</nav></div>
+      </section>
+      <div class="lower-grid">
+        <section class="panel" id="companies"><div class="panel-heading"><h2>Company sources</h2><span class="small">Configured via CLI</span></div>{% if companies %}<ul class="company-list">{% for c in companies %}<li><div><a href="{{ c.careers_url }}" target="_blank" rel="noopener noreferrer">{{ c.name }} ↗</a><small>{{ c._id }}{% if c.adapter %} · {{ c.adapter }}{% endif %}</small></div><span class="pill">{{ 'Enabled' if c.enabled else 'Awaiting adapter' if not c.adapter else 'Disabled' }}</span></li>{% endfor %}</ul>{% else %}<p class="panel-empty">No companies registered yet. Add a company individually or import a JSON list with the CLI.</p>{% endif %}</section>
+        <section class="panel" id="activity"><div class="panel-heading"><h2>Recent activity</h2><a class="refresh" href="/">Refresh ↻</a></div>{% if runs %}<ul class="run-list">{% for run in runs %}<li><div><strong>{{ run.kind|replace('_', ' ')|capitalize }}</strong><small>{{ run.started_at.strftime('%d %b · %H:%M UTC') }}{% if run.company_id %} · {{ run.company_id }}{% endif %}</small>{% if run.error_type %}<small>{{ run.error_type }} · check service logs</small>{% endif %}</div><span class="pill {{ 'error' if run.status in ['failed', 'partial', 'interrupted'] else '' }}">{{ run.status }}</span></li>{% endfor %}</ul>{% else %}<p class="panel-empty">No runs recorded. Daily runs use a separate systemd timer; manual runs appear here too.</p>{% endif %}</section>
+      </div>
+      <footer class="page-footer"><span>JOBSCRAP <span class="footer-dot">·</span> A focused search, by design.</span><span>All dates shown in UTC</span></footer>
+    </div>
+  </main>
+</body>
+</html>

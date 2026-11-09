@@ -1,0 +1,29 @@
+[Unit]
+Description=JobScrap daily scrape and resume matching
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=1h
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+User=jobscrap
+Group=jobscrap
+WorkingDirectory=/opt/jobscrap
+Environment=JOBSCRAP_ENV_FILE=/opt/jobscrap/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/jobscrap/.venv/bin/jobscrap scrape
+TimeoutStartSec=2h
+Restart=on-failure
+RestartSec=5min
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/jobscrap/var
+# Optional Chromium lives in /opt/jobscrap/var/ms-playwright, not a user home.
+Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/jobscrap/var/ms-playwright
+
+[Install]
+WantedBy=multi-user.target

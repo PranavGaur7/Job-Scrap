@@ -1,0 +1,22 @@
+# Project Instructions
+
+- Always read PROJECT_MEMORY.md before development.
+- Update project memory after significant changes.
+- Use Python with venv and simple, modular architecture.
+- Keep scraping, storage, matching, scheduling, and UI separate.
+- Prefer deterministic logic over unnecessary AI calls.
+- Prefer official ATS APIs over browser scraping.
+- Include only jobs with verified posting dates within the last 3 days.
+- Deduplicate jobs by stable ATS ID or canonical URL.
+- Use LangChain with interchangeable AI providers.
+- Store API keys in .env, never in source control.
+- Add tests for new functionality.
+- Do not overengineer or invent working integrations.
+- Follow the modular `src/jobscrap` architecture; company adapters export `ADAPTER` or use `jobscrap.adapters` entry points. Do not add company-specific branches to the pipeline.
+- Production scraping must use standalone Python. Development Playwright MCP is never a production dependency.
+- Preserve posting-date evidence. Never substitute update, discovery, first-seen, or scrape dates for posting dates.
+- Maintain both company/ATS-ID and company/canonical-URL uniqueness; keep posting and discovery times separate.
+- CLI, dashboard manual actions and systemd must share `STATE_DIR` and the local pipeline lock on one host.
+- Run `PYTHONPATH=src .venv/bin/python -m unittest discover -s tests -v` and compile checks after changes; report skipped suites and live verification limits explicitly.
+- Before enabling a real company, inspect its source using the company-career-scraper skill and add sanitized fixture tests plus a standalone live verification. Register unimplemented sources as disabled `awaiting_adapter` records.
+- Do not store raw resume text or credentials in MongoDB/logs; hybrid matching sends redacted resume/job content to the configured provider only when enabled.
