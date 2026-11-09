@@ -5,6 +5,7 @@ from .domain import http_url
 
 
 def _reject_config_secrets(value):
+    """Check nested adapter settings before they could be persisted to MongoDB."""
     if isinstance(value, dict):
         for key, child in value.items():
             normalized = re.sub(r"[^a-z]", "", str(key).lower())
@@ -17,6 +18,11 @@ def _reject_config_secrets(value):
 
 
 def validate_company(value, adapters):
+    """Return a storage-ready company; an unimplemented source stays disabled.
+
+    Registration records intent to integrate a company. It does not establish
+    that a real extraction method or trustworthy posting date has been verified.
+    """
     company_id = value.get("id", value.get("_id", ""))
     if not isinstance(company_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,79}", company_id):
         raise ValueError("Company id must contain 1–80 lowercase letters, digits or hyphens")

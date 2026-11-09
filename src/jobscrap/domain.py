@@ -1,3 +1,8 @@
+"""Jobs, source evidence and identity rules, independent of network/database code.
+
+These objects enforce business invariants before external data reaches storage.
+An adapter still has to prove that its source field really means "posted at".
+"""
 from __future__ import annotations
 
 import hashlib
@@ -19,6 +24,7 @@ def utcnow():
 
 
 def http_url(value: str) -> str:
+    """Reject unsafe schemes and embedded credentials at the data boundary."""
     parts = urlsplit(value.strip())
     if parts.scheme not in {"http", "https"} or not parts.hostname or parts.username or parts.password:
         raise ValueError("Expected an HTTP(S) URL without embedded credentials")
@@ -29,6 +35,7 @@ def http_url(value: str) -> str:
 
 
 def canonical_url(value: str) -> str:
+    """Normalize a job's URL without deleting query parameters that identify it."""
     parts = urlsplit(http_url(value))
     hostname = parts.hostname.lower()
     if ":" in hostname:
@@ -43,10 +50,16 @@ def canonical_url(value: str) -> str:
 
 
 def plain_text(value: str) -> str:
+    """Remove basic source markup and normalize whitespace for display/hashing.
+
+    This is text normalization, not an HTML security sanitizer. Templates must
+    still escape rendered values rather than mark source content as safe HTML.
+    """
     return " ".join(html.unescape(re.sub(r"<[^>]*>", " ", value)).split())
 
 
 def digest(value) -> str:
+    """Fingerprint deterministic JSON; a fingerprint identifies content, not secrecy."""
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
@@ -58,6 +71,7 @@ class DateKind(str, Enum):
 
 @dataclass(frozen=True)
 class PostingDate:
+    """A UTC posting timestamp with evidence explaining where it came from."""
     posted_at: datetime
     raw_value: str
     source_url: str
@@ -66,6 +80,8 @@ class PostingDate:
     precision: str = "timestamp"
 
     def __post_init__(self):
+        # Keep provenance next to the timestamp so discovery/update dates cannot
+        # silently be substituted for posting evidence during later processing.
         http_url(self.source_url)
         if not self.raw_value.strip() or not self.field_name.strip():
             raise ValueError("Posting date requires raw source evidence and field name")
@@ -116,6 +132,7 @@ class PostingDate:
 
 @dataclass(frozen=True)
 class JobListing:
+    """Common adapter output before company details and storage metadata are added."""
     title: str
     location: str
     description: str
@@ -143,5 +160,10 @@ class JobListing:
         return digest([self.title, self.location, self.description])
 
     def identity(self, company_id):
+        """Keep identity stable across edits; ATS IDs are scoped to a company.
+
+        Content hashes answer "did this change?"; identity answers "which job?".
+        Storage preserves an existing _id when a URL-only record later gains an ATS ID.
+        """
         return digest([company_id, "ats" if self.external_job_id else "url",
                        self.external_job_id or self.canonical_url])

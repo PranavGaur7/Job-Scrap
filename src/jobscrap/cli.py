@@ -1,3 +1,4 @@
+"""Command entry point: construct dependencies, dispatch work, and report exit status."""
 from __future__ import annotations
 
 import argparse
@@ -5,10 +6,14 @@ import json
 import logging
 from pathlib import Path
 import sys
-import time
+
+from .observability import configure_logging as _configure_logging, log_failure
+
+log = logging.getLogger(__name__)
 
 
 def parser():
+    """Describe commands without importing optional runtime integrations."""
     root = argparse.ArgumentParser(description="Verified recent jobs and resume matching")
     commands = root.add_subparsers(dest="command", required=True)
     commands.add_parser("init-db", help="Verify Atlas connectivity and create indexes")
@@ -37,19 +42,20 @@ def parser():
 
 
 def configure_logging(level):
-    logging.Formatter.converter = time.gmtime
-    logging.basicConfig(level=level, format="%(asctime)sZ %(levelname)s %(name)s %(message)s")
-    for name in ("httpx", "httpcore", "pymongo", "openai"):
-        logging.getLogger(name).setLevel(logging.WARNING)
+    """Keep a single logging policy for CLI, timer and dashboard processes."""
+    _configure_logging(level)
 
 
 def main(argv=None):
+    """Own process-level resources; library modules return data or raise errors."""
     args = parser().parse_args(argv)
     repository = None
+    status = "success"
     try:
         from .config import Settings
         settings = Settings.from_env()
         configure_logging(settings.log_level)
+        log.info("command_started command=%s", args.command)
         from .adapters.registry import discover_adapters
         from .matching import skills
         from .resume import load_resume
@@ -66,7 +72,7 @@ def main(argv=None):
             import uvicorn
             from .web.app import create_app
             uvicorn.run(create_app(settings), host=settings.dashboard_host, port=settings.dashboard_port,
-                        proxy_headers=False)
+                        proxy_headers=False, access_log=False)
             return 0
 
         from .storage import connect
@@ -91,6 +97,7 @@ def main(argv=None):
         repository.ping()
         if args.command == "init-db":
             repository.ensure_indexes()
+            log.info("database_initialization_finished")
             print("MongoDB connected; indexes ready")
         elif args.command == "companies":
             from .companies import validate_company
@@ -115,6 +122,7 @@ def main(argv=None):
                     raise ValueError("Import contains duplicate company IDs")
                 for company in companies:
                     repository.put_company(company)
+                log.info("companies_registered count=%s", len(companies))
                 print(json.dumps({"registered": len(companies),
                                   "awaiting_adapter": sum(not c["adapter"] for c in companies)}))
         else:
@@ -124,15 +132,22 @@ def main(argv=None):
             print(json.dumps(result, default=str, indent=2))
             # Exhausting the chosen budget is normal; do not trigger paid systemd retries.
             failed = result["stats"]["company_errors"] or result["stats"]["ai_failures"]
-            return 1 if failed or result["status"] == "failed" else 0
+            exit_code = 1 if failed or result["status"] == "failed" else 0
+            status = "failed" if exit_code else result["status"]
+            return exit_code
         return 0
     except KeyboardInterrupt:
+        status = "interrupted"
+        log.warning("command_interrupted command=%s", args.command)
         return 130
     except Exception as exc:
+        status = "failed"
         from .locking import RunBusy
         if isinstance(exc, RunBusy):
+            status = "busy"
             print("Another pipeline run is active; retry after it finishes", file=sys.stderr)
             return 75
+        log_failure(log, "command_failed", exc)
         if isinstance(exc, ModuleNotFoundError):
             print(f"Missing dependency: {exc.name}. Activate .venv and install the project and needed extras; see README.md.",
                   file=sys.stderr)
@@ -146,6 +161,8 @@ def main(argv=None):
     finally:
         if repository is not None:
             repository.close()
+            log.debug("database_client_closed")
+        log.info("command_finished command=%s status=%s", args.command, status)
 
 
 if __name__ == "__main__":

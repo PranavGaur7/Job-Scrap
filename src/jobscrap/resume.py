@@ -1,19 +1,25 @@
+"""Extract a resume locally and expose normalized text plus its scoring fingerprint."""
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import logging
 import re
 
 from .domain import digest
 
+log = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True)
 class Resume:
+    """In-memory resume content; only its fingerprint is persisted as metadata."""
     text: str
     content_hash: str
 
     @classmethod
     def from_text(cls, text: str):
+        """Ignore formatting-only changes so they do not trigger paid rescoring."""
         text = " ".join(text.split())
         if len(text) < 100:
             raise ValueError("Resume has insufficient selectable text; provide a text-based PDF")
@@ -21,6 +27,7 @@ class Resume:
 
 
 def load_resume(path: Path) -> Resume:
+    """Read selectable PDF text; scanned/encrypted documents need user preparation."""
     from pypdf import PdfReader
 
     if not path.is_file():
@@ -28,7 +35,9 @@ def load_resume(path: Path) -> Resume:
     reader = PdfReader(path)
     if reader.is_encrypted:
         raise ValueError("Resume PDF is encrypted; provide an unlocked copy")
-    return Resume.from_text("\n".join(page.extract_text() or "" for page in reader.pages))
+    resume = Resume.from_text("\n".join(page.extract_text() or "" for page in reader.pages))
+    log.debug("resume_loaded pages=%s characters=%s", len(reader.pages), len(resume.text))
+    return resume
 
 
 def redact_contacts(text: str) -> str:

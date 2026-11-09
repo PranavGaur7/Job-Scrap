@@ -1,3 +1,4 @@
+"""Load environment configuration once and reject invalid settings before doing I/O."""
 from __future__ import annotations
 
 import os
@@ -8,6 +9,7 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class Settings:
+    """Shared process configuration; secret fields are excluded from dataclass repr."""
     mongodb_uri: str = field(default="", repr=False)
     mongodb_database: str = "jobscrap"
     mongodb_timeout_ms: int = 5000
@@ -31,6 +33,8 @@ class Settings:
     dashboard_password: str = field(default="", repr=False)
 
     def __post_init__(self):
+        # Fail early rather than discovering an invalid budget, timeout or public
+        # dashboard binding halfway through a scheduled scrape.
         if self.matching_mode not in {"deterministic", "hybrid"}:
             raise ValueError("MATCHING_MODE must be deterministic or hybrid")
         if self.matching_mode == "hybrid" and not self.ai_model:
@@ -53,10 +57,13 @@ class Settings:
 
     @classmethod
     def from_env(cls):
+        """Respect shell overrides and resolve portable paths beside the selected .env."""
         from dotenv import load_dotenv
 
         env_path = Path(os.environ.get("JOBSCRAP_ENV_FILE", ".env")).resolve()
         load_dotenv(env_path, override=False)
+        # A timer's working directory may differ from an interactive shell's.
+        # Anchoring paths here keeps both processes on the same resume and lock.
         base = env_path.parent
 
         def path(key, default):

@@ -25,6 +25,8 @@ def fixture_listing(**changes):
 
 class PipelineTests(unittest.TestCase):
     def setUp(self):
+        # Keep the real workflow but replace external systems. Assertions below
+        # verify orchestration requests, not a live site's or MongoDB's behavior.
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.settings = Settings(state_dir=Path(self.directory.name))
@@ -40,6 +42,7 @@ class PipelineTests(unittest.TestCase):
         self.adapter.allowed_hosts.return_value = {"example.test"}
 
     def run_pipeline(self, **kwargs):
+        """Inject in-memory resume/client replacements into production orchestration."""
         return execute(self.repo, self.settings, adapters={"fixture": self.adapter},
                        resume_loader=lambda _: RESUME, client_factory=lambda *args: nullcontext(None), **kwargs)
 

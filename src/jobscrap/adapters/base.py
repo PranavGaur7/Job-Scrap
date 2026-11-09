@@ -1,3 +1,4 @@
+"""Contract separating company-specific extraction from the shared pipeline."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -8,6 +9,7 @@ from ..domain import JobListing
 
 @dataclass(frozen=True)
 class ScrapeBatch:
+    """Fetched listings plus whether absence can safely mean a job has closed."""
     jobs: Sequence[JobListing]
     # True only if ALL pages and listings were fetched successfully. This permits
     # closing jobs absent from the snapshot. Incremental/date-limited feeds use False.
@@ -15,6 +17,11 @@ class ScrapeBatch:
 
 
 class Adapter(Protocol):
+    """Translate a proven source into common listings using an injected client.
+
+    This describes expected methods for tools/readers; Protocol does not validate
+    a live source or enforce method behavior at runtime.
+    """
     name: str
 
     def allowed_hosts(self, company: dict) -> set[str]: ...

@@ -1,3 +1,9 @@
+"""MongoDB access, identity reconciliation and bounded idempotent retries.
+
+Callers use repository operations instead of duplicating MongoDB update syntax.
+The driver returns timezone-aware dates; source posting and discovery times are
+stored separately and never used interchangeably.
+"""
 from __future__ import annotations
 
 from functools import wraps
@@ -14,6 +20,7 @@ from pymongo.errors import (
 
 from .config import Settings
 from .domain import JobListing, WINDOW, utcnow
+from .observability import log_failure
 
 log = logging.getLogger(__name__)
 
@@ -27,6 +34,7 @@ class IdentityConflict(ValueError):
 
 
 def retry_db(operation):
+    """Retry transient I/O only; decorated writes must tolerate being replayed."""
     @wraps(operation)
     def wrapped(*args, **kwargs):
         for attempt in range(3):
@@ -34,20 +42,27 @@ def retry_db(operation):
                 return operation(*args, **kwargs)
             except (ConnectionFailure, AutoReconnect, NetworkTimeout, ServerSelectionTimeoutError) as exc:
                 if attempt == 2:
+                    log_failure(log, f"database_retries_exhausted operation={operation.__name__}", exc)
                     raise StorageUnavailable("MongoDB unavailable after bounded retries") from exc
-                log.warning("Transient database error (%s); retry %s/2", type(exc).__name__, attempt + 1)
+                log.warning("database_retry operation=%s attempt=%s limit=3 error_type=%s",
+                            operation.__name__, attempt + 1, type(exc).__name__)
                 time.sleep(0.25 * 2**attempt + random.uniform(0, 0.1))
             except OperationFailure as exc:
                 if (exc.has_error_label("RetryableWriteError") or exc.code in {91, 189, 11600, 11602}) and attempt < 2:
+                    log.warning("database_retry operation=%s attempt=%s limit=3 error_type=%s",
+                                operation.__name__, attempt + 1, type(exc).__name__)
                     time.sleep(0.25 * 2**attempt)
                     continue
+                log_failure(log, f"database_operation_failed operation={operation.__name__}", exc)
                 raise StorageUnavailable("MongoDB operation failed; check permissions and server logs") from exc
             except PyMongoError as exc:
+                log_failure(log, f"database_operation_failed operation={operation.__name__}", exc)
                 raise StorageUnavailable("MongoDB operation failed; check configuration") from exc
     return wrapped
 
 
 def connect(settings: Settings):
+    """Build a verified TLS client; ping() separately confirms server reachability."""
     import certifi
 
     if not settings.mongodb_uri:
@@ -63,12 +78,16 @@ def connect(settings: Settings):
             retryWrites=True, retryReads=True, appname="jobscrap",
         )
     except (PyMongoError, ValueError) as exc:
+        log_failure(log, "database_client_configuration_failed", exc)
         raise StorageUnavailable("Invalid MongoDB configuration") from exc
     repository = MongoRepository(client[settings.mongodb_database], client)
+    # Do not log the connection URI, even at DEBUG: it includes credentials.
+    log.debug("database_client_created tls_verified=true")
     return repository
 
 
 class MongoRepository:
+    """Persist companies, jobs, history and cache with consistent identity rules."""
     def __init__(self, database, client=None):
         self.db, self.client = database, client
 
@@ -82,7 +101,10 @@ class MongoRepository:
 
     @retry_db
     def ensure_indexes(self):
+        """Let MongoDB enforce uniqueness even if two writers race."""
         self.db.companies.create_index("name", name="company_name")
+        # A partial index ignores URL-only records instead of treating all absent
+        # ATS IDs as the same value within a company.
         self.db.jobs.create_index(
             [("company_id", ASCENDING), ("external_job_id", ASCENDING)],
             unique=True, name="company_external_id_unique",
@@ -99,6 +121,7 @@ class MongoRepository:
         self.db.scraping_history.create_index("started_at", name="history_started")
         self.db.scraping_history.create_index([("company_id", ASCENDING), ("started_at", DESCENDING)])
         # _id is the unique cache key; keep cache/history until an explicit retention policy is chosen.
+        log.debug("database_indexes_ready")
 
     @retry_db
     def put_company(self, company):
@@ -117,6 +140,7 @@ class MongoRepository:
         return list(self.db.companies.find(query).sort("name", ASCENDING))
 
     def _existing(self, company_id, listing):
+        """Reconcile ATS and URL lookups; never silently merge conflicting jobs."""
         by_url = self.db.jobs.find_one({"company_id": company_id, "canonical_url": listing.canonical_url})
         by_id = (self.db.jobs.find_one({"company_id": company_id, "external_job_id": listing.external_job_id})
                  if listing.external_job_id else None)
@@ -128,6 +152,7 @@ class MongoRepository:
 
     @retry_db
     def upsert_job(self, company, listing: JobListing, now=None):
+        """Insert/update one verified recent listing and return (document, changed)."""
         now = now or utcnow()
         if listing.posting_date is None or not listing.posting_date.recent(now):
             raise ValueError("Only verified recent jobs can be inserted")
@@ -150,19 +175,25 @@ class MongoRepository:
                 if existing:
                     fields["previous_content_hash"] = existing["content_hash"]
             identity = existing["_id"] if existing else listing.identity(company["_id"])
+            # $setOnInsert preserves the original discovery time on reruns.
+            # Omitting an absent external ID also preserves any ID learned earlier.
             update = {"$set": fields, "$setOnInsert": {"first_seen_at": now}}
             if changed:
                 update["$unset"] = {"match": ""}
             try:
                 self.db.jobs.update_one({"_id": identity}, update, upsert=True)
+                log.debug("job_upserted job_identity=%s created=%s content_changed=%s",
+                          identity, existing is None, changed)
                 return self.db.jobs.find_one({"_id": identity}), changed
             except DuplicateKeyError:
+                log.warning("job_identity_write_conflict retry=%s", attempt == 0)
                 if attempt:
                     raise IdentityConflict("Concurrent identity conflict; investigate job source") from None
         raise AssertionError("unreachable")
 
     @retry_db
     def exclude_listing(self, company_id, listing, now):
+        """Hide a known job whose current source evidence no longer qualifies."""
         existing = self._existing(company_id, listing)
         if existing:
             self.db.jobs.update_one({"_id": existing["_id"]}, {"$set": {
@@ -173,6 +204,7 @@ class MongoRepository:
 
     @retry_db
     def mark_missing(self, company_id, seen_ids):
+        """Close absent jobs only when the caller has a complete source snapshot."""
         self.db.jobs.update_many(
             {"company_id": company_id, "_id": {"$nin": list(seen_ids)}, "active": True},
             {"$set": {"active": False, "closed_detected_at": utcnow()}},
@@ -195,11 +227,13 @@ class MongoRepository:
     @retry_db
     def recent_jobs(self, *, now=None, company_id=None, limit=100, offset=0,
                     search="", location="", min_score=0, resume_hash=None, signature=None, sort="newest"):
+        """Recheck freshness at read time: time passes even if scraping stops."""
         now = now or utcnow()
         query = {"date_verified": True, "active": True, "posted_at": {"$gte": now - WINDOW, "$lte": now}}
         if company_id:
             query["company_id"] = company_id
         if search:
+            # Treat user input as literal text, not a MongoDB regular expression.
             query["$or"] = [{field: {"$regex": re.escape(search), "$options": "i"}}
                             for field in ("title", "company_name", "description")]
         if location:
@@ -228,6 +262,7 @@ class MongoRepository:
 
     @retry_db
     def recover_interrupted_runs(self):
+        """Mark unfinished history after taking the host-wide pipeline lock."""
         # Only called under the shared local file lock: no live pipeline can own these runs.
         self.db.scraping_history.update_many(
             {"status": "running"}, {"$set": {"status": "interrupted", "finished_at": utcnow()}},

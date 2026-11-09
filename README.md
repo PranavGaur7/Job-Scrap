@@ -100,6 +100,30 @@ Budget deferral produces `partial` history but CLI exit 0, avoiding automatic pa
 
 The dashboard suppresses stale scores when the resume, scorer settings or job content changes. Sorting by match score shows currently scored records; default newest-first also shows pending records. Pagination displays 25 jobs at a time. All displayed times are UTC. The dashboard uses Basic auth when configured, form tokens and origin checks for manual actions; keep it on loopback/SSH or behind HTTPS.
 
+## Comments and logging
+
+Start with the module docstrings in `pipeline.py`, `domain.py`, `storage.py` and `matching.py`. Function docstrings explain contracts, and inline comments explain decisions such as complete-snapshot closure, identity versus content hashes, and retryable AI fallbacks. They describe the implemented behavior without treating mocked tests as proof of live integrations.
+
+`src/jobscrap/observability.py` configures Python's standard logging. Application events have a UTC timestamp, severity, module, run/company/job identifiers where available, and a stable event name. Context follows the shared pipeline across module calls and is restored after each company/job scope. A dash means that identifier does not apply to the event.
+
+| Level | What to look for |
+| --- | --- |
+| `INFO` | Commands, dashboard lifecycle, run/company progress, source counts, completion duration and counters |
+| `DEBUG` | Accepted/excluded identities, duplicate counts, cache decisions, rescore pages, HTTP status/body size/timing, and safe failure locations |
+| `WARNING` | Retries/backoff, blocked access, a busy pipeline, partial results, and an exhausted AI budget |
+| `ERROR` | Failed database operations, source/company failures, failed manual runs and command failures |
+
+Set `LOG_LEVEL=DEBUG` in `.env` for detailed investigation; restart the dashboard to reload its configuration. An individual CLI command can override it with `LOG_LEVEL=DEBUG jobscrap scrape`. Application logs exclude raw exception messages, resume/job text, credentials and full request URLs. Safe failure locations contain file basenames, line numbers and function names without source lines or local variable values. Do not add sensitive values to log messages or context. Third-party debug request tracing is suppressed, and Uvicorn access logs are disabled so query strings are not recorded by that access logger.
+
+Diagnostics go to **stderr**, while CLI JSON/results stay on **stdout**. On the VM, systemd captures stderr in journald and manages retention. Locally, read logs in the terminal or capture them separately:
+
+```sh
+mkdir -p var
+jobscrap scrape > var/result.json 2> var/run.log
+```
+
+That local command overwrites the two files on each invocation; use a fresh filename to keep previous captures. The application intentionally does not rotate one shared file from multiple processes. Use `journalctl -u jobscrap-daily.service --since today` for persistent VM history.
+
 ## Tests and validation
 
 ```sh

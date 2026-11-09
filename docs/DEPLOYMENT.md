@@ -67,7 +67,9 @@ sudo journalctl -u jobscrap-daily.service --since today
 sudo journalctl -u jobscrap-dashboard.service -f
 ```
 
-Logs contain timestamps, IDs, counters and safe error types, not raw provider errors/keys/resume text. Source-specific details may require adding sanitized diagnostics when implementing adapters. History in MongoDB complements the journal, but cannot record an error while Atlas itself is unreachable.
+Application logs contain UTC timestamps, module/level, run/company/job IDs, elapsed times, counters and safe error types. Set `LOG_LEVEL=DEBUG` for per-job/cache decisions, HTTP status/timing and failure locations (file basename, line, function). Raw provider messages, source payloads, resume text, credentials, full request URLs and traceback source/locals are excluded from application events. Uvicorn access logs are disabled to avoid recording search query strings. Keep normal production logging at INFO; restart the dashboard after changing `.env`. A CLI override such as `LOG_LEVEL=DEBUG jobscrap scrape` applies to one invocation.
+
+Logs use stderr, leaving stdout available for command results. Journald handles persistence/retention independently of the app; no multi-process rotating file is required. History in MongoDB complements the journal, but cannot record an error while Atlas itself is unreachable. Source-specific diagnostics must follow the same privacy rules when adapters are added.
 
 From the local machine, open a tunnel:
 
